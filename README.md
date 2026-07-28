@@ -1,5 +1,8 @@
 # ICU Replay Simulator
 
+<img width="1917" height="1012" alt="grafik" src="https://github.com/user-attachments/assets/1551fc1f-d7e7-47c6-bf8b-c8ac70465949" />
+
+
 A configurable, multimodal MIMIC-IV replay simulator. It streams a curated ICU
 patient's real vitals, labs, medications, and ECG (waveform + machine
 measurements) as a live, time-controllable feed, for testing downstream systems
