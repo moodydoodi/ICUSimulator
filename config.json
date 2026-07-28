@@ -1,0 +1,62 @@
+{
+  "use_case": "sasi_cardiac_v0.1",
+
+  "paths": {
+    "timeline_dir":  "data/processed/patient_timelines",
+    "ecg_index_dir": "data/processed/ecg_index",
+    "waveform_dir":  "data/processed/ecg_waveforms",
+    "output_dir":    "data/output"
+  },
+
+  "patients": [
+    {"subject_id": 16179553, "label": "CVICU — MVR + ECMO + cardiogenic shock"},
+    {"subject_id": 17520318, "label": "CVICU — CABG + AVR + septic shock, 7 drugs"},
+    {"subject_id": 13269747, "label": "CCU — AFib RVR + prolonged QT, 16 ECGs"},
+    {"subject_id": 13408370, "label": "CCU — anterior MI + VF arrest + AICD, 28 ECGs"},
+    {"subject_id": 15906662, "label": "CVICU — AMI + multi-vessel CABG + cardiogenic shock"}
+  ],
+
+  "stream": {
+    "emit_alarms": true,
+    "log_ecg_chunks": false
+  },
+
+  "alarms": {
+    "hypotension":   {"signal": "map",                "op": "<", "threshold": 65,  "critical": true},
+    "spo2_low":      {"signal": "spo2",               "op": "<", "threshold": 90,  "critical": true},
+    "tachycardia":   {"signal": "heart_rate",         "op": ">", "threshold": 120, "critical": false},
+    "bradycardia":   {"signal": "heart_rate",         "op": "<", "threshold": 45,  "critical": false},
+    "qtc_prolonged": {"signal": "ecg_machine_qtc_ms", "op": ">", "threshold": 500, "critical": true}
+  },
+
+  "markers": {
+    "critical_only": true,
+    "min_duration_hours": 1.0,
+    "merge_gap_hours": 2.0
+  },
+
+  "plausible_ranges": {
+    "heart_rate":         [10, 300],
+    "map":                [10, 250],
+    "spo2":               [10, 100],
+    "respiratory_rate":   [0, 80],
+    "temperature":        [25, 45],
+    "sbp":                [20, 300],
+    "dbp":                [10, 250],
+    "ecg_machine_hr":     [10, 300],
+    "ecg_machine_pr_ms":  [50, 400],
+    "ecg_machine_qrs_ms": [40, 300],
+    "ecg_machine_qtc_ms": [200, 700]
+  },
+
+  "drug_classes": {
+    "vasoactive":    ["norepinephrine", "epinephrine", "phenylephrine", "vasopressin", "dopamine", "dobutamine", "milrinone", "angiotensin", "isoproterenol", "ephedrine", "levophed"],
+    "antiarrhythmic":["amiodarone", "lidocaine", "procainamide", "adenosine", "diltiazem", "esmolol", "digoxin", "sotalol", "ibutilide"],
+    "sedation":      ["propofol", "midazolam", "versed", "fentanyl", "dexmedetomidine", "precedex", "ketamine", "morphine", "hydromorphone", "dilaudid", "lorazepam", "ativan"],
+    "paralytic":     ["rocuronium", "vecuronium", "cisatracurium", "nimbex", "succinylcholine", "pancuronium"],
+    "anticoagulant": ["heparin", "bivalirudin", "argatroban", "warfarin", "enoxaparin"],
+    "diuretic":      ["furosemide", "lasix", "bumetanide", "torsemide"],
+    "insulin":       ["insulin"],
+    "fluid":         ["nacl", "sodium chloride", "dextrose", "d5", "d10", "sterile water", "lactated ringer", "ringer", "albumin", "nepro", "jevity", "glucerna", "solution", "kcl", "potassium chlor", "calcium", "sodium bicarb", "magnesium sulf", "citrate", "water"]
+  }
+}
