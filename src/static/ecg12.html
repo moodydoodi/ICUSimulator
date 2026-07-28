@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>12-Lead ECG</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#0B0F0E;color:#E8FFF3;font-family:'Consolas','Lucida Console',monospace;overflow:hidden}
+#top{height:52px;display:flex;align-items:center;gap:16px;padding:0 18px;border-bottom:1px solid #1E2A26;background:#111815}
+#ttl{font-size:16px;font-weight:bold}
+#meta{font-size:12px;color:#7C9389;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button{background:#111815;color:#7C9389;border:1px solid #2a3c30;border-radius:5px;padding:6px 12px;font-family:inherit;font-size:12px;cursor:pointer}
+button:hover{background:#1E2A26;color:#39FF88}
+#cvwrap{position:absolute;top:52px;left:0;right:0;bottom:0}
+#cv{width:100%;height:100%;display:block}
+#err{position:absolute;top:52px;left:0;right:0;text-align:center;padding:40px;color:#7C9389;font-size:14px}
+</style>
+</head>
+<body>
+<div id="top">
+  <span id="ttl">12-LEAD ECG</span>
+  <span id="meta">loading…</span>
+  <button id="refresh">↻ Refresh</button>
+  <button id="close">✕ Close</button>
+</div>
+<div id="cvwrap"><canvas id="cv"></canvas></div>
+<div id="err" style="display:none"></div>
+
+<script>
+const BG='#0B0F0E',TR='#39FF88';
+// Standard 3×4 print layout: each COLUMN is a different 2.5 s time window,
+// each cell shows a different lead during that window (true time-alignment).
+const LAYOUT=[['I','aVR','V1','V4'],['II','aVL','V2','V5'],['III','aVF','V3','V6']];
+const cv=document.getElementById('cv'),x=cv.getContext('2d');
+let data=null;
+
+document.getElementById('close').onclick=()=>window.close();
+document.getElementById('refresh').onclick=load;
+window.addEventListener('resize',()=>{if(data)draw(data)});
+
+async function load(){
+  try{
+    const d=await(await fetch('/ecg/current12')).json();
+    if(!d||!d.leads){showErr('No 12-lead recording available at the current time.');return}
+    document.getElementById('err').style.display='none';cv.style.display='block';
+    data=d;draw(d);
+    document.getElementById('meta').textContent=
+      `study ${d.study_id||'—'} · HR ${d.hr??'—'} · QTc ${d.qtc??'—'} ms · 25 mm/s · 10 mm/mV · ${d.rhythm||''}`;
+  }catch(e){showErr('Could not load ECG.')}
+}
+function showErr(m){const e=document.getElementById('err');e.textContent=m;e.style.display='block';cv.style.display='none';document.getElementById('meta').textContent='';}
+
+function draw(d){
+  const W=cv.width=cv.offsetWidth,H=cv.height=cv.offsetHeight;
+  x.fillStyle=BG;x.fillRect(0,0,W,H);
+  const ML=20,MR=16,MT=16,MB=20,pw=W-ML-MR,ph=H-MT-MB;
+  const ppm=pw/250,mmV=10*ppm,fs=d.fs||250;      // 25 mm/s, 10 mm/mV, 4×2.5 s = 250 mm wide
+  grid(ML,MT,pw,ph,ppm);
+  const rows=4,rowH=ph/rows,colW=pw/4,leads=d.leads||{};
+  // 3 lead rows × 4 time-aligned columns
+  for(let r=0;r<3;r++){
+    const baseY=MT+rowH*r+rowH/2;
+    for(let c=0;c<4;c++){
+      const nm=LAYOUT[r][c],sig=leads[nm];if(!sig)continue;
+      const t0=Math.floor(c*2.5*fs),seg=sig.slice(t0,t0+Math.floor(2.5*fs)),x0=ML+colW*c;
+      x.save();x.beginPath();x.rect(x0,MT+rowH*r+2,colW,rowH-4);x.clip();
+      // baseline-centre on the segment median so it can't drift out of the band
+      const med=median(seg);
+      trace(seg,x0,baseY,mmV,ppm,fs,med);
+      x.restore();
+      // thin column separators
+      if(c>0){x.strokeStyle='rgba(255,120,120,.25)';x.lineWidth=1;x.beginPath();x.moveTo(x0,MT+rowH*r+4);x.lineTo(x0,MT+rowH*r+rowH-4);x.stroke();}
+      x.fillStyle='#cfe';x.font='bold 13px monospace';x.fillText(nm,x0+6,MT+rowH*r+16);
+    }
+  }
+  // rhythm strip = full Lead II, 10 s, with 1 mV calibration pulse
+  const baseY=MT+rowH*3+rowH/2,rII=leads['II']||[];
+  x.save();x.beginPath();x.rect(ML,MT+rowH*3+2,pw,rowH-4);x.clip();
+  calPulse(ML,baseY,ppm,mmV);
+  trace(rII,ML+6+0.2*25*ppm,baseY,mmV,ppm,fs,median(rII));
+  x.restore();
+  x.fillStyle='#cfe';x.font='bold 13px monospace';x.fillText('II · rhythm',ML+6,MT+rowH*3+16);
+}
+function trace(seg,x0,baseY,mmV,ppm,fs,mid){
+  const dx=25*ppm/fs;x.strokeStyle=TR;x.lineWidth=1.4;x.lineJoin='round';x.beginPath();
+  for(let i=0;i<seg.length;i++){const px=x0+i*dx,py=baseY-(seg[i]-mid)*mmV;i?x.lineTo(px,py):x.moveTo(px,py)}
+  x.stroke();
+}
+function calPulse(x0,baseY,ppm,mmV){
+  x.strokeStyle=TR;x.lineWidth=1.4;x.beginPath();
+  x.moveTo(x0,baseY);x.lineTo(x0+5,baseY);
+  x.lineTo(x0+5,baseY-mmV);
+  x.lineTo(x0+5+0.2*25*ppm,baseY-mmV);
+  x.lineTo(x0+5+0.2*25*ppm,baseY);x.stroke();
+}
+function grid(ox,oy,w,h,ppm){
+  x.lineWidth=.6;
+  x.strokeStyle='rgba(255,90,90,.10)';
+  for(let m=0;m<=w+.5;m+=ppm){line(ox+m,oy,ox+m,oy+h)}
+  for(let m=0;m<=h+.5;m+=ppm){line(ox,oy+m,ox+w,oy+m)}
+  x.strokeStyle='rgba(255,90,90,.24)';
+  for(let m=0;m<=w+.5;m+=ppm*5){line(ox+m,oy,ox+m,oy+h)}
+  for(let m=0;m<=h+.5;m+=ppm*5){line(ox,oy+m,ox+w,oy+m)}
+}
+function line(a,b,c,d){x.beginPath();x.moveTo(a,b);x.lineTo(c,d);x.stroke()}
+function median(a){if(!a||!a.length)return 0;const s=[...a].sort((p,q)=>p-q);return s[s.length>>1]}
+
+load();
+</script>
+</body>
+</html>
