@@ -1,10 +1,10 @@
 """SimulationEngine — replays a curated patient timeline as a live stream.
 
 Tick loop (every TICK_S wall-clock seconds):
-  • ECG chunk  — 50 samples @ 500 Hz  →  10 messages/sec
-  • Vitals     — once per simulated second
-  • Drug events — on change only
-  • Alarms     — on change only
+  - ECG chunk  — 50 samples @ 500 Hz  ->  10 messages/sec
+  - Vitals     — once per simulated second
+  - Drug events — on change only
+  - Alarms     — on change only (only if config.stream.emit_alarms is true)
 
 The engine is transport-agnostic: it puts dicts into `broadcast_queue`.
 The server picks them up and forwards to WebSocket clients + JSONL log.
@@ -27,6 +27,9 @@ VITALS_EVERY_S  = 1.0     # emit vitals every N simulated seconds
 
 class SimulationEngine:
 
+    LEAD_ORDER = ["I", "II", "III", "aVR", "aVL", "aVF",
+                  "V1", "V2", "V3", "V4", "V5", "V6"]
+
     def __init__(self, config: dict, broadcast_queue: asyncio.Queue):
         self.config          = config
         self.broadcast_queue = broadcast_queue
@@ -43,15 +46,16 @@ class SimulationEngine:
 
         self._clock   = SimClock(speed=1.0)
         self._player  = ECGPlayer()
-        self._source: TimelineSource | None = None
+        self._source  = None
 
         # Change-detection state
-        self._last_vitals_t: float     = -999.0
-        self._last_ecg_file: str | None = None
-        self._last_drugs: list         = []
-        self._last_alarms: dict        = {}
+        self._last_vitals_t: float = -999.0
+        self._last_ecg_file        = None
+        self._last_drugs: list     = []
+        self._last_alarms: dict    = {}
+        self._pending_seek: bool   = False
 
-    # ── Control API (called from REST endpoints) ──────────────────────────────
+    # -- Control API (called from REST endpoints) ------------------------------
 
     def switch_patient(self, idx: int):
         self.current_idx = idx % len(self.patients)
@@ -62,9 +66,9 @@ class SimulationEngine:
         self._clock.speed = self.speed
 
     def event_summary(self):
-        return self._source.event_summary() if self._source else {"duration_hours": 0, "alarms": [], "ecgs": []}
-
-    LEAD_ORDER = ["I","II","III","aVR","aVL","aVF","V1","V2","V3","V4","V5","V6"]
+        if self._source:
+            return self._source.event_summary()
+        return {"duration_hours": 0, "alarms": [], "onsets": [], "ecgs": []}
 
     def current_ecg_12lead(self):
         import numpy as np
@@ -96,14 +100,22 @@ class SimulationEngine:
                 "study_id": meta["study_id"], "rhythm": meta["rhythm"],
                 "hr": meta["hr"], "qtc": meta["qtc"]}
 
-    # ── Internal ──────────────────────────────────────────────────────────────
+    def _drug_class(self, name: str) -> str:
+        """Map a drug name to a class from config.drug_classes (for the UI + SASI)."""
+        n = (name or "").lower()
+        for cls, pats in self.config.get("drug_classes", {}).items():
+            if any(p.lower() in n for p in pats):
+                return cls
+        return "other"
+
+    # -- Internal --------------------------------------------------------------
 
     def _load_patient(self):
         p   = self.patients[self.current_idx]
         sid = p["subject_id"]
         log.info(f"Loading patient {sid}: {p['label']}")
         try:
-            self._source = TimelineSource(sid, self.timeline_dir, self.ecg_index_dir)
+            self._source = TimelineSource(sid, self.timeline_dir, self.ecg_index_dir, self.config)
         except FileNotFoundError as e:
             log.error(f"Timeline not found: {e}")
             self._source = None
@@ -112,29 +124,23 @@ class SimulationEngine:
         self._last_ecg_file  = None
         self._last_drugs     = []
         self._last_alarms    = {}
-        self._pending_seek = False
+        self._pending_seek   = False
         self._player._current_path = None   # force ECG reload
 
     async def _emit(self, msg: dict):
         await self.broadcast_queue.put(msg)
 
-    def _resolve_ecg(self, rel: str | None) -> str | None:
+    def _resolve_ecg(self, rel):
         """Resolve the relative ecg_lead2_file path to an absolute path.
-
-        The parquet column stores  'ecg_waveforms/p{sid}_s{study}_lead2.npy'.
-        The actual files live at   data/processed/ecg_waveforms/...
-        waveform_dir.parent        = data/processed/
-        waveform_dir.parent / rel  = data/processed/ecg_waveforms/...  ✓
-        """
+        Parquet stores 'ecg_waveforms/p{sid}_s{study}_lead2.npy'; files live at
+        data/processed/ecg_waveforms/... (= waveform_dir.parent / rel)."""
         if not rel:
             return None
         rel = rel.replace(".0_lead2.npy", "_lead2.npy").replace(".0_all12.npy", "_all12.npy")
         waveform_dir = Path(self.config["waveform_dir"])
-        # Primary: data/processed/ + rel
         p = waveform_dir.parent / rel
         if p.exists():
             return str(p)
-        # Fallback: project_root + rel (in case nb03 ever stores full relative paths)
         p2 = self.project_root / rel
         return str(p2) if p2.exists() else None
 
@@ -147,9 +153,9 @@ class SimulationEngine:
         self._clock._last_wall = __import__("time").monotonic()
         self._last_vitals_t = -999.0     # force an immediate re-emit at the new time
         self._last_ecg_file = None
-        self._pending_seek = True 
+        self._pending_seek = True
 
-    # ── Main loop ─────────────────────────────────────────────────────────────
+    # -- Main loop -------------------------------------------------------------
 
     async def run(self):
         self._load_patient()
@@ -164,6 +170,8 @@ class SimulationEngine:
             "duration_hours": (self._source.duration_hours if self._source else 0.0),
             "speed": self.speed,
         })
+
+        emit_alarms = self.config.get("stream", {}).get("emit_alarms", True)
 
         while True:
             if self.paused or self._source is None:
@@ -186,7 +194,7 @@ class SimulationEngine:
                     await asyncio.sleep(TICK_S)
                     continue
 
-            # ── ECG chunk ─────────────────────────────────────────────────────
+            # -- ECG chunk --------------------------------------------------
             ecg_file = self._source.ecg_file_at(hours)
             if ecg_file != self._last_ecg_file:
                 hr = (self._source.vitals_at(hours).get("heart_rate") or 75.0)
@@ -201,7 +209,7 @@ class SimulationEngine:
                 "samples": chunk,
             })
 
-            # ── Vitals (1 Hz) ─────────────────────────────────────────────────
+            # -- Vitals (1 Hz) ----------------------------------------------
             if sim_t - self._last_vitals_t >= VITALS_EVERY_S:
                 self._last_vitals_t = sim_t
                 vitals = self._source.vitals_at(hours)
@@ -220,8 +228,10 @@ class SimulationEngine:
                     **{f"lab_{k}": v for k, v in labs.items()},
                 })
 
-                # Drug events on change
+                # Drug events on change (each tagged with its config class)
                 drugs = self._source.drugs_at(hours)
+                for d in drugs:
+                    d["class"] = self._drug_class(d.get("drug", ""))
                 if drugs != self._last_drugs:
                     await self._emit({
                         "type": "drug_event",
@@ -231,17 +241,18 @@ class SimulationEngine:
                     })
                     self._last_drugs = drugs
 
-                # Alarm events on change
-                alarms = self._source.alarms_at(hours)
-                for alarm, active in alarms.items():
-                    if active != self._last_alarms.get(alarm, False):
-                        await self._emit({
-                            "type": "alarm",
-                            "patient_id": p_meta["subject_id"],
-                            "t": round(sim_t, 3),
-                            "condition": alarm,
-                            "active": bool(active),
-                        })
-                self._last_alarms = alarms
+                # Alarm events on change — only if enabled in config
+                if emit_alarms:
+                    alarms = self._source.alarms_at(hours)
+                    for alarm, active in alarms.items():
+                        if active != self._last_alarms.get(alarm, False):
+                            await self._emit({
+                                "type": "alarm",
+                                "patient_id": p_meta["subject_id"],
+                                "t": round(sim_t, 3),
+                                "condition": alarm,
+                                "active": bool(active),
+                            })
+                    self._last_alarms = alarms
 
             await asyncio.sleep(TICK_S)
