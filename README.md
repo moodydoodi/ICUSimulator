@@ -1,6 +1,7 @@
 # ICU Replay Simulator
 
-<img width="1917" height="1012" alt="grafik" src="https://github.com/user-attachments/assets/1551fc1f-d7e7-47c6-bf8b-c8ac70465949" />
+<img width="1917" height="1012" alt="grafik" src="https://github.com/user-attachments/assets/368e1241-14e5-4eb0-bdc0-fd80584ab966" />
+
 
 
 A configurable, multimodal MIMIC-IV replay simulator. It streams a curated ICU
