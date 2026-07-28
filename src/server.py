@@ -1,10 +1,10 @@
 """src/server.py — FastAPI application.
 
 Responsibilities:
-  • Serve monitor.html at GET /
-  • Broadcast the engine stream over WebSocket at ws://…/stream
-  • Write every message to a JSONL session log
-  • Expose REST endpoints for patient switching, speed, pause
+  - Serve monitor.html at GET / and ecg12.html at GET /ecg12
+  - Broadcast the engine stream over WebSocket at ws://.../stream
+  - Write messages to a JSONL session log (ECG chunks optional via config)
+  - Expose REST endpoints for patient switching, speed, pause, seek
 """
 
 import asyncio
@@ -34,22 +34,38 @@ def create_app(config: dict) -> FastAPI:
     session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     jsonl_path = log_dir / f"session_{session_ts}.jsonl"
     _jsonl = open(jsonl_path, "w", encoding="utf-8")
-    log.info(f"JSONL log → {jsonl_path}")
+    log.info(f"JSONL log -> {jsonl_path}")
 
-    connected: set[WebSocket] = set()
+    log_ecg_chunks = config.get("stream", {}).get("log_ecg_chunks", False)
+    connected: set = set()
 
-    # ── Broadcaster ───────────────────────────────────────────────────────────
+    def _session_start_msg():
+        p = engine.patients[engine.current_idx]
+        return {
+            "type": "session_start",
+            "patient_id": p["subject_id"],
+            "label": p["label"],
+            "patients": engine.patients,
+            "speed": engine.speed,
+            "paused": engine.paused,
+            "schema_version": "1.0",
+            "t": 0.0,
+            "duration_hours": (engine._source.duration_hours if engine._source else 0.0),
+        }
+
+    # -- Broadcaster -----------------------------------------------------------
 
     async def _broadcaster():
         while True:
             msg = await broadcast_queue.get()
 
-            # Write to JSONL
-            _jsonl.write(json.dumps(msg, default=str) + "\n")
-            _jsonl.flush()
+            # Write to JSONL — optionally skip high-frequency ECG chunks
+            if not (msg.get("type") == "ecg_chunk" and not log_ecg_chunks):
+                _jsonl.write(json.dumps(msg, default=str) + "\n")
+                _jsonl.flush()
 
             # Forward to all connected WebSocket clients
-            dead: set[WebSocket] = set()
+            dead: set = set()
             for ws in list(connected):
                 try:
                     await ws.send_json(msg)
@@ -57,7 +73,7 @@ def create_app(config: dict) -> FastAPI:
                     dead.add(ws)
             connected.difference_update(dead)
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # -- Lifecycle -------------------------------------------------------------
 
     @app.on_event("startup")
     async def _startup():
@@ -69,28 +85,14 @@ def create_app(config: dict) -> FastAPI:
     async def _shutdown():
         _jsonl.close()
 
-    # ── WebSocket endpoint ────────────────────────────────────────────────────
+    # -- WebSocket endpoint ----------------------------------------------------
 
     @app.websocket("/stream")
     async def _stream(ws: WebSocket):
         await ws.accept()
         connected.add(ws)
-        # Immediately send current patient context so late-joining clients sync
-        p = engine.patients[engine.current_idx]
         try:
-            await ws.send_json({
-                "type": "session_start",
-                "patient_id": p["subject_id"],
-                "label": p["label"],
-                "patients": engine.patients,
-                "speed": engine.speed,
-                "paused": engine.paused,
-                "schema_version": "1.0",
-                "t": 0.0,
-                "duration_hours": (engine._source.duration_hours if engine._source else 0.0),
-                "speed": engine.speed,
-            })
-            # Keep-alive: just wait (engine pushes, client only receives)
+            await ws.send_json(_session_start_msg())   # sync late-joining clients
             while True:
                 await ws.receive_text()
         except WebSocketDisconnect:
@@ -98,38 +100,24 @@ def create_app(config: dict) -> FastAPI:
         finally:
             connected.discard(ws)
 
-
-
-    # ── Control endpoints ─────────────────────────────────────────────────────
+    # -- Control endpoints -----------------------------------------------------
 
     @app.post("/control/patient/{idx}")
     async def _set_patient(idx: int):
         engine.switch_patient(idx)
-        p = engine.patients[engine.current_idx]
-        await broadcast_queue.put({
-            "type": "session_start",
-            "patient_id": p["subject_id"],
-            "label": p["label"],
-            "patients": engine.patients,
-            "speed": engine.speed,
-            "paused": engine.paused,
-            "schema_version": "1.0",
-            "t": 0.0,
-            "duration_hours": (engine._source.duration_hours if engine._source else 0.0),
-            "speed": engine.speed,
-        })
-        return JSONResponse({"ok": True, "patient": p})
-    '''
+        await broadcast_queue.put(_session_start_msg())
+        return JSONResponse({"ok": True, "patient": engine.patients[engine.current_idx]})
+
     @app.post("/control/speed/{speed}")
     async def _set_speed(speed: float):
         engine.set_speed(speed)
         return JSONResponse({"ok": True, "speed": engine.speed})
-    '''
+
     @app.post("/control/seek/{hours}")
     async def _seek(hours: float):
         engine.seek(hours)
         return JSONResponse({"ok": True, "hours": hours})
-    
+
     @app.post("/control/pause")
     async def _toggle_pause():
         engine.paused = not engine.paused
@@ -160,22 +148,19 @@ def create_app(config: dict) -> FastAPI:
         data = engine.current_ecg_12lead()
         return JSONResponse(data if data else {})
 
-    # ── Serve monitor.html ────────────────────────────────────────────────────
+    # -- Serve static pages ----------------------------------------------------
 
     _static_dir = Path(__file__).parent / "static"
 
     @app.get("/ecg12")
     async def _ecg12_page():
-        html = (_static_dir / "ecg12.html").read_text(encoding="utf-8")
-        return HTMLResponse(html)
+        return HTMLResponse((_static_dir / "ecg12.html").read_text(encoding="utf-8"))
 
     @app.get("/")
     async def _root():
-        html = (_static_dir / "monitor.html").read_text(encoding="utf-8")
-        return HTMLResponse(html)
+        return HTMLResponse((_static_dir / "monitor.html").read_text(encoding="utf-8"))
 
     return app
-
 
 
 def run(config: dict, host: str = "0.0.0.0", port: int = 8000):
