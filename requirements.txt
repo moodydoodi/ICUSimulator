@@ -1,0 +1,15 @@
+# --- Simulator runtime ---
+fastapi
+uvicorn
+pandas
+numpy
+pyarrow
+
+# --- Notebooks (data pipeline 01–04) ---
+wfdb            # ECG waveform extraction (MIMIC-IV-ECG)
+matplotlib
+ipywidgets
+tqdm
+
+# --- Optional ---
+neurokit2       # nicer synthetic ECG fallback; pure-numpy fallback works without it
