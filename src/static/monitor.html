@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ICU Simulator — Bedside Monitor</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0B0F0E;--panel:#111815;--edge:#1E2A26;--edge-hi:#2a3c30;
+  --green:#39FF88;--green-dim:#1D7A47;--green-dark:#0d2018;
+  --amber:#FFB000;--red:#FF3B3B;--cyan:#4FD8E8;--violet:#B98CFF;
+  --text:#E8FFF3;--dim:#7C9389;--font:'Consolas','Lucida Console',monospace;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);overflow:hidden;user-select:none;font-size:13px}
+/* rows: patient strip / vitals / ecg / bottom panels / transport bar */
+#app{height:100vh;display:grid;grid-template-rows:64px 100px 1fr auto 56px}
+/* patient strip */
+#ps{background:var(--panel);border-bottom:1px solid var(--edge);display:flex;align-items:center;padding:0 20px;gap:14px}
+#p-id{font-size:20px;font-weight:bold;color:var(--text);white-space:nowrap}
+#p-meta{font-size:11px;color:var(--dim);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#p-clock{background:var(--green-dark);color:var(--green);padding:4px 12px;font-size:11px;font-weight:bold;letter-spacing:.06em;border-radius:3px;white-space:nowrap;border:1px solid var(--green-dim)}
+#p-icu{font-size:11px;color:var(--dim);white-space:nowrap;min-width:150px;text-align:right}
+#p-status{font-size:13px;font-weight:bold;white-space:nowrap;min-width:110px;text-align:right}
+#p-conn{width:8px;height:8px;border-radius:50%;background:#333;flex-shrink:0}
+#p-conn.live{background:var(--green);box-shadow:0 0 6px var(--green)}
+#p-conn.error{background:var(--red)}
+/* vital tiles */
+#vrow{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--edge);border-bottom:1px solid var(--edge)}
+.vt{background:var(--bg);display:flex;flex-direction:column;justify-content:center;padding:0 14px;border:2px solid transparent;transition:border-color .3s;position:relative;overflow:hidden}
+.vt.ac{border-color:var(--red);animation:pc 1s infinite}
+.vt.aw{border-color:var(--amber);animation:pw 1s infinite}
+@keyframes pc{0%,100%{background:var(--bg)}50%{background:#200500}}
+@keyframes pw{0%,100%{background:var(--bg)}50%{background:#201000}}
+.vn{font-size:10px;font-weight:bold;color:var(--dim);letter-spacing:.1em;margin-bottom:1px}
+.vv{font-size:30px;font-weight:bold;line-height:1;letter-spacing:-.02em}
+.vv.sm{font-size:20px}.vu{font-size:10px;opacity:.7;margin-top:1px}
+.vs{font-size:10px;font-weight:bold;letter-spacing:.05em;margin-top:3px}
+#h .vv,#h .vu,#h .vs{color:var(--green)}
+#m .vv,#m .vu,#m .vs{color:var(--red)}
+#sp .vv,#sp .vu,#sp .vs{color:var(--cyan)}
+#r .vv,#r .vu,#r .vs{color:#c8ff00}
+#t .vv,#t .vu,#t .vs{color:var(--text)}
+#sb .vv,#sb .vu,#sb .vs{color:var(--red)}
+/* ecg */
+#ecg{background:var(--bg);position:relative;min-height:0}
+#el{position:absolute;top:6px;left:14px;font-size:11px;color:var(--dim);z-index:2}
+#er{position:absolute;top:6px;right:14px;font-size:10px;color:var(--green-dim);z-index:2;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#ec{width:100%;height:100%;display:block}
+#es{position:absolute;bottom:4px;right:14px;font-size:9px;color:#2a4030;z-index:2}
+/* bottom */
+#bot{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--edge);height:210px;overflow:hidden}
+.bp{background:var(--panel);display:flex;flex-direction:column;overflow:hidden}
+.bt{font-size:9px;font-weight:bold;color:var(--dim);letter-spacing:.1em;padding:6px 12px 4px;border-bottom:1px solid var(--edge);flex-shrink:0}
+.bb{flex:1;padding:6px 12px;overflow-y:auto;font-size:11px;line-height:1.7}
+.bb::-webkit-scrollbar{width:4px}.bb::-webkit-scrollbar-thumb{background:var(--edge);border-radius:2px}
+.dp{display:inline-block;background:#0a2228;border:1px solid var(--cyan);color:var(--cyan);border-radius:3px;padding:1px 7px;font-size:10px;margin:2px 3px 2px 0;white-space:nowrap}
+.dp .dr{opacity:.65}
+.dp.fluid{background:#0e1512;border-color:var(--edge-hi)!important;color:var(--dim)!important;font-size:9px;opacity:.8}
+.drip-div{height:1px;background:var(--edge);border:0;margin:5px 0 3px}
+.dclbl{font-size:8px;color:var(--dim);letter-spacing:.1em;margin:4px 0 1px;display:block}
+.dim{color:var(--dim)}.ok{color:var(--green)}.wa{color:var(--amber)}.cr{color:var(--red)}
+.ab{display:inline-block;padding:1px 7px;border-radius:2px;font-size:10px;font-weight:bold;letter-spacing:.08em;margin:2px 3px 2px 0;animation:bl 1.2s infinite}
+.ab.cr{background:#200500;color:var(--red);border:1px solid var(--red)}
+.ab.wa{background:#201000;color:var(--amber);border:1px solid var(--amber)}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:.4}}
+.lr{display:flex;justify-content:space-between;padding:1px 0}
+.cu{color:var(--amber)}.cd{color:var(--cyan)}
+/* transport / controls */
+#ctrl{background:#080d0b;border-top:1px solid var(--edge);display:flex;align-items:center;gap:12px;padding:0 14px}
+#ctrl select{background:var(--panel);color:var(--dim);border:1px solid var(--edge-hi);border-radius:4px;padding:4px 8px;font-family:var(--font);font-size:11px;cursor:pointer;max-width:250px}
+.cb{background:var(--panel);color:var(--dim);border:1px solid var(--edge-hi);border-radius:4px;padding:4px 10px;font-family:var(--font);font-size:11px;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap}
+.cb:hover{background:var(--edge);color:var(--green)}
+.cb.on{background:var(--green-dark);color:var(--green);border-color:var(--green)}
+.sg{display:flex;gap:2px}
+/* scrubber */
+#seekWrap{flex:1;display:flex;align-items:center;gap:10px;min-width:180px}
+#seek{flex:1;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:var(--edge-hi);outline:none;cursor:pointer}
+#seek::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);cursor:pointer;border:none}
+#seek::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);cursor:pointer;border:none}
+#seekLbl{font-size:10px;color:var(--dim);min-width:132px;text-align:right;white-space:nowrap}
+#ci{font-size:10px;color:var(--dim);min-width:92px;text-align:right}
+/* 12-lead button (opens full-screen viewer in a new window) */
+#ecg12btn{position:absolute;top:4px;left:32px;z-index:3;background:var(--panel);color:var(--dim);border:1px solid var(--edge-hi);border-radius:4px;font-family:var(--font);font-size:10px;padding:2px 8px;cursor:pointer}
+#ecg12btn:hover{background:var(--edge);color:var(--green);border-color:var(--green)}
+/* scrubber event ruler — two tracks */
+#seekTrack{flex:1;display:flex;flex-direction:column;justify-content:center;gap:1px;position:relative;min-width:120px}
+#seekTrack #seek{flex:0 0 auto;width:100%}
+.seekMarks{position:relative;height:7px;width:100%}
+.mk{position:absolute;top:0;height:100%}
+.mk-ecg{width:2px;background:var(--cyan);opacity:.95;pointer-events:auto;cursor:pointer;box-shadow:0 0 4px var(--cyan)}
+.mk-on{width:3px;top:0;height:100%;border-radius:1px;pointer-events:auto;cursor:pointer}
+.mk-hypo{background:#FF3B3B;box-shadow:0 0 4px #FF3B3B}
+.mk-spo2{background:#FFB000;box-shadow:0 0 4px #FFB000}
+.mk-qtc{background:#B98CFF;box-shadow:0 0 4px #B98CFF}
+#seekLeg{display:flex;gap:9px;align-items:center;font-size:9px;color:var(--dim);white-space:nowrap;margin-left:6px}
+#seekLeg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<div id="app">
+<div id="ps">
+  <span id="p-id">PATIENT —</span>
+  <span id="p-meta">—</span>
+  <span id="p-clock">⏱ 1× · LIVE</span>
+  <span id="p-icu">ICU DAY 1 · T+00:00</span>
+  <span id="p-status" style="color:var(--green)">● STABLE</span>
+  <div id="p-conn"></div>
+</div>
+
+<div id="vrow">
+  <div class="vt" id="h"><span class="vn">HEART RATE</span><span class="vv" id="v-hr">—</span><span class="vu">bpm</span><span class="vs" id="s-hr">NOT MEASURED</span></div>
+  <div class="vt" id="m"><span class="vn">MAP</span><span class="vv" id="v-map">—</span><span class="vu">mmHg</span><span class="vs" id="s-map">NOT MEASURED</span></div>
+  <div class="vt" id="sp"><span class="vn">SpO₂</span><span class="vv" id="v-spo2">—</span><span class="vu">%</span><span class="vs" id="s-spo2">NOT MEASURED</span></div>
+  <div class="vt" id="r"><span class="vn">RESP RATE</span><span class="vv" id="v-rr">—</span><span class="vu">/min</span><span class="vs" id="s-rr">NOT MEASURED</span></div>
+  <div class="vt" id="t"><span class="vn">TEMP</span><span class="vv sm" id="v-temp">—</span><span class="vu">°C</span><span class="vs" id="s-temp">NOT MEASURED</span></div>
+  <div class="vt" id="sb"><span class="vn">SBP / DBP</span><span class="vv sm" id="v-sbp">— / —</span><span class="vu">mmHg</span><span class="vs" id="s-sbp">—</span></div>
+</div>
+
+<div id="ecg">
+  <span id="el">II</span>
+  <button id="ecg12btn">⊞ 12-Lead ECG</button>
+  <span id="er"></span>
+  <canvas id="ec"></canvas>
+  <span id="es">25 mm/s · 10 mm/mV · 500 Hz</span>
+</div>
+
+<div id="bot">
+  <div class="bp"><div class="bt">💊 ACTIVE MEDICATIONS</div><div class="bb" id="db"><span class="dim">none active</span></div></div>
+  <div class="bp"><div class="bt">⚠ ALARMS &amp; CHANGES</div><div class="bb" id="ab2"><span class="dim">no active alarms</span></div></div>
+  <div class="bp"><div class="bt">🧪 LABS  ·  hosp/labevents</div><div class="bb" id="lb"><span class="dim">loading…</span></div></div>
+</div>
+
+<div id="ctrl">
+  <select id="pts"></select>
+  <button class="cb" id="pb">⏸ Pause</button>
+  <div class="sg">
+    <button class="cb on" data-spd="1">1×</button>
+    <button class="cb" data-spd="5">5×</button>
+    <button class="cb" data-spd="30">30×</button>
+    <button class="cb" data-spd="120">120×</button>
+    <button class="cb" data-spd="300">300×</button>
+  </div>
+  <div id="seekWrap">
+    <span class="dim" style="font-size:10px">SEEK</span>
+    <div id="seekTrack">
+      <div id="marksEcg" class="seekMarks"></div>
+      <input id="seek" type="range" min="0" max="100" value="0" step="0.05">
+      <div id="marksOnset" class="seekMarks"></div>
+    </div>
+    <span id="seekLbl">hour 0.0 / 0.0</span>
+    <span id="seekLeg"><span><i class="mk-ecg" style="width:8px;box-shadow:none;background:var(--cyan)"></i>ECG</span><span><i class="mk-hypo"></i>MAP&lt;60</span><span><i class="mk-spo2"></i>SpO₂&lt;88</span><span><i class="mk-qtc"></i>QTc&gt;500</span></span>
+  </div>
+  <span id="ci">Connecting…</span>
+</div>
+</div>
+
+<script>
+// ── ECG canvas ────────────────────────────────────────────────────────────────
+const BUF_N=4000,AMP=55,ERASE=40,BG='#0B0F0E',GR='#122018',GRM='#0d1810',TR='#39FF88';
+const canvas=document.getElementById('ec'),ctx=canvas.getContext('2d');
+let wp=0,prevX=null,prevY=null;
+
+function resize(){canvas.width=canvas.offsetWidth;canvas.height=canvas.offsetHeight;grid();prevX=null;prevY=null}
+function grid(){
+  const W=canvas.width,H=canvas.height,pps=W/BUF_N;
+  ctx.fillStyle=BG;ctx.fillRect(0,0,W,H);
+  ctx.lineWidth=.5;
+  ctx.strokeStyle=GRM;
+  for(let x=0;x<W;x+=pps*100){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  ctx.strokeStyle=GR;
+  for(let x=0;x<W;x+=pps*500){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  ctx.beginPath();ctx.moveTo(0,H/2);ctx.lineTo(W,H/2);ctx.stroke();
+}
+// Draw one incoming chunk as a continuous sweep. Pen-up on wrap so we never
+// connect the right edge back to the left (that was the diagonal artifact).
+function chunk(s){
+  if(!canvas.width||!canvas.height)return;
+  const W=canvas.width,H=canvas.height,pps=W/BUF_N;
+  const clampY=y=>y<1?1:(y>H-1?H-1:y);          // keep the trace inside the panel
+  for(let i=0;i<s.length;i++){
+    const col=wp%BUF_N;
+    const cx=col*pps;
+    const cy=clampY(H/2 - s[i]*AMP);
+    // erase a thin band just ahead of the pen (classic sweep-monitor look)
+    ctx.fillStyle=BG;ctx.fillRect(cx+1,0,ERASE,H);
+    // redraw any grid line that falls inside the erased band
+    ctx.lineWidth=.5;ctx.strokeStyle=GR;
+    const gx=Math.ceil((cx+1)/(pps*500))*(pps*500);
+    if(gx<cx+1+ERASE){ctx.beginPath();ctx.moveTo(gx,0);ctx.lineTo(gx,H);ctx.stroke()}
+    // draw the trace segment
+    ctx.strokeStyle=TR;ctx.lineWidth=1.6;ctx.shadowBlur=4;ctx.shadowColor='#003d20';
+    const wrapped=(prevX!==null&&cx<prevX);      // pointer jumped back to left edge
+    if(prevX!==null&&!wrapped){
+      ctx.beginPath();ctx.moveTo(prevX,prevY);ctx.lineTo(cx,cy);ctx.stroke();
+    }
+    prevX=cx;prevY=cy;wp++;
+  }
+  ctx.shadowBlur=0;
+}
+
+// ── vitals / status ───────────────────────────────────────────────────────────
+function clsf(n,v){
+  if(v===null||v===undefined)return['NOT MEASURED','dim'];
+  if(n==='heart_rate'){if(v<45)return['BRADYCARDIA','wa'];if(v>120)return['TACHYCARDIA','cr'];if(v>100)return['ELEVATED','wa'];return['NORMAL','ok']}
+  if(n==='map'){if(v<60)return['CRITICAL LOW','cr'];if(v<70)return['HYPOTENSIVE','wa'];if(v>110)return['HYPERTENSIVE','wa'];return['NORMAL','ok']}
+  if(n==='spo2'){if(v<88)return['SEVERE HYPOXIA','cr'];if(v<92)return['HYPOXIA','wa'];return['NORMAL','ok']}
+  if(n==='temperature'){if(v>=38.5)return['HIGH FEVER','cr'];if(v>=37.5)return['FEVER','wa'];if(v<36)return['HYPOTHERMIA','wa'];return['NORMAL','ok']}
+  if(n==='respiratory_rate'){if(v<8||v>30)return['ABNORMAL','cr'];if(v>24)return['ELEVATED','wa'];return['NORMAL','ok']}
+  return['—','dim'];
+}
+function os(v){
+  const hr=v.heart_rate,m=v.map,s=v.spo2;
+  if((m!==null&&m<60)||(hr!==null&&hr>140)||(s!==null&&s<88))return['● CRITICAL','var(--red)'];
+  if((m!==null&&m<70)||(hr!==null&&hr>110)||(s!==null&&s<92))return['● MONITORING','var(--amber)'];
+  return['● STABLE','var(--green)'];
+}
+function se(id,t){const e=document.getElementById(id);if(e)e.textContent=t}
+function fmt(v,dp=0){if(v===null||v===undefined)return'—';return typeof v==='number'?v.toFixed(dp):'—'}
+
+const VT=[['hr','heart_rate',0],['map','map',0],['spo2','spo2',0],['rr','respiratory_rate',0],['temp','temperature',1]];
+const VTID=['h','m','sp','r','t'];
+let pv={},durationHours=0,seeking=false;
+
+function upd(msg){
+  VT.forEach(([id,key,dp],i)=>{
+    const v=msg[key];
+    se(`v-${id}`,fmt(v,dp));
+    const[lbl,cls]=clsf(key,v);
+    const sel=document.getElementById(`s-${id}`);
+    if(sel){sel.textContent=lbl;sel.className=`vs ${cls}`}
+    const tile=document.getElementById(VTID[i]);
+    if(tile){tile.classList.remove('ac','aw');if(cls==='cr')tile.classList.add('ac');else if(cls==='wa')tile.classList.add('aw')}
+  });
+  se('v-sbp',`${fmt(msg.sbp,0)} / ${fmt(msg.dbp,0)}`);
+  const[sl,sc]=os(msg);
+  const sd=document.getElementById('p-status');
+  if(sd){sd.textContent=sl;sd.style.color=sc}
+  const hh=msg.hours_since_admission||0;
+  const h=Math.floor(hh),mn=Math.floor((hh-h)*60);
+  se('p-icu',`ICU DAY ${Math.floor(h/24)+1} · T+${String(h).padStart(2,'0')}:${String(mn).padStart(2,'0')}`);
+  const rh=msg.ecg_rhythm;
+  se('er',(rh&&rh!=='null'&&rh!=='None')?rh:'');
+  // move the scrubber with sim time (unless the user is dragging it)
+  if(!seeking){
+    const s=document.getElementById('seek');s.value=hh;
+    se('seekLbl',`hour ${hh.toFixed(1)} / ${durationHours.toFixed(1)}`);
+  }
+  upChanges(msg,pv);
+  pv={...msg};
+  upLabs(msg);
+}
+
+// classify meds so clinically active drips stand out and maintenance fluids are de-emphasised.
+// (in deliverable #7 this map moves into the external config and can be baked into the parquet.)
+const DRUG_CLASSES=[
+  [/nor.?epi|epinephrine|phenylephrine|vasopressin|dopamine|dobutamine|milrinone|angiotensin|isoproterenol|ephedrine|levophed|neosynephrine/i,'vasoactive'],
+  [/amiodarone|lidocaine|procainamide|adenosine|diltiazem|esmolol|digoxin|sotalol|ibutilide/i,'antiarrhythmic'],
+  [/propofol|midazolam|versed|fentanyl|dexmedetomidine|precedex|ketamine|morphine|hydromorphone|dilaudid|lorazepam|ativan/i,'sedation'],
+  [/rocuronium|vecuronium|cisatracurium|nimbex|succinylcholine|pancuronium/i,'paralytic'],
+  [/heparin|bivalirudin|argatroban|warfarin|enoxaparin/i,'anticoag'],
+  [/furosemide|lasix|bumetanide|torsemide/i,'diuretic'],
+  [/insulin/i,'insulin'],
+  [/nacl|sodium chloride|dextrose|d5|d10|sterile water|lactated ringer|ringer|albumin|nepro|jevity|glucerna|nutrition|\bfull\b|solution|kcl|potassium chlor|calcium|sodium bicarb|magnesium sulf|\bfluid\b|\bwater\b/i,'fluid'],
+];
+const CLASS_STYLE={
+  vasoactive:{c:'#FF3B3B'},antiarrhythmic:{c:'#B98CFF'},sedation:{c:'#4FD8E8'},
+  paralytic:{c:'#FFB000'},anticoag:{c:'#39FF88'},diuretic:{c:'#c8ff00'},
+  insulin:{c:'#4FD8E8'},other:{c:'#4FD8E8'}
+};
+const CLASS_ORDER=['vasoactive','antiarrhythmic','sedation','paralytic','anticoag','diuretic','insulin','other'];
+function drugClass(n){for(const[re,c]of DRUG_CLASSES)if(re.test(n))return c;return 'other'}
+function upDrugs(drugs){
+  const b=document.getElementById('db');if(!b)return;
+  if(!drugs||!drugs.length){b.innerHTML='<span class="dim">none active</span>';return}
+  const drips=[],fluids=[];
+  drugs.forEach(d=>{const c=drugClass(d.drug||'');(c==='fluid'?fluids:drips).push({...d,cls:c})});
+  drips.sort((a,b2)=>CLASS_ORDER.indexOf(a.cls)-CLASS_ORDER.indexOf(b2.cls));
+  const chip=d=>{const st=CLASS_STYLE[d.cls]||CLASS_STYLE.other;
+    return`<span class="dp" style="border-color:${st.c};color:${st.c}">${d.drug}${d.rate?` <span class="dr">${d.rate} ${d.unit||''}</span>`:''}</span>`};
+  let h=drips.length?drips.map(chip).join(''):'<span class="dim">no active drips</span>';
+  if(fluids.length){
+    h+=`<hr class="drip-div"><span class="dclbl">MAINTENANCE FLUIDS / NUTRITION</span>`
+      +fluids.map(d=>`<span class="dp fluid">${d.drug}${d.rate?` <span class="dr">${d.rate} ${d.unit||''}</span>`:''}</span>`).join('');
+  }
+  b.innerHTML=h;
+}
+
+const alarms={};
+const ALBL={tachycardia:['TACHYCARDIA','cr'],bradycardia:['BRADYCARDIA','wa'],hypotension:['HYPOTENSION','cr'],spo2_low:['SpO₂ LOW','cr'],qtc_prolonged:['QTc PROLONGED','wa']};
+let clines=[];
+
+function upAlarm(cond,active){alarms[cond]=active;renderA()}
+function renderA(){
+  const b=document.getElementById('ab2');if(!b)return;
+  const f=Object.entries(alarms).filter(([,v])=>v);
+  let h=f.map(([k])=>{const[l,c]=ALBL[k]||[k.toUpperCase(),'wa'];return`<span class="ab ${c}">${l}</span>`}).join('');
+  if(clines.length)h+=`<div style="margin-top:4px">${clines.slice(-6).join('<br>')}</div>`;
+  b.innerHTML=h||'<span class="dim">no active alarms</span>';
+}
+function upChanges(msg,prev){
+  [['heart_rate','HR'],['map','MAP'],['spo2','SpO₂']].forEach(([k,n])=>{
+    const c=msg[k],p=prev[k];
+    if(c!==null&&p!==null&&c!==undefined&&p!==undefined&&Math.abs(c-p)>=2){
+      const a=c>p?'▲':'▼',cl=c>p?'cu':'cd';
+      clines.push(`<span class="${cl}">${a} ${n} ${Math.round(p)} → ${Math.round(c)}</span>`);
+      if(clines.length>10)clines.shift();
+    }
+  });renderA();
+}
+
+const LC=[['lab_creatinine','Creatinine','mg/dL',2],['lab_glucose','Glucose','mg/dL',0],['lab_lactate','Lactate','mmol/L',1],['lab_troponin','Troponin','ng/mL',2],['lab_potassium','K⁺','mEq/L',1],['lab_sodium','Na⁺','mEq/L',0],['lab_hemoglobin','Hgb','g/dL',1],['lab_wbc','WBC','×10³',1]];
+function upLabs(msg){
+  const b=document.getElementById('lb');if(!b)return;
+  b.innerHTML=LC.map(([k,n,u,dp])=>{
+    const v=msg[k];
+    const val=(v!==null&&v!==undefined)?`${Number(v).toFixed(dp)} <span class="dim">${u}</span>`:'<span class="dim">—</span>';
+    return`<div class="lr"><span class="dim">${n}</span><span>${val}</span></div>`;
+  }).join('');
+}
+
+function popPts(pts){
+  const s=document.getElementById('pts');s.innerHTML='';
+  pts.forEach((p,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${p.subject_id} — ${p.label}`;s.appendChild(o)});
+}
+
+// ── controls ──────────────────────────────────────────────────────────────────
+document.getElementById('pts').addEventListener('change',async function(){await fetch(`/control/patient/${this.value}`,{method:'POST'})});
+
+let curSpeed=1;
+document.querySelectorAll('[data-spd]').forEach(b=>{
+  b.addEventListener('click',async function(){
+    await fetch(`/control/speed/${this.dataset.spd}`,{method:'POST'});
+    document.querySelectorAll('[data-spd]').forEach(x=>x.classList.remove('on'));
+    this.classList.add('on');
+    curSpeed=this.dataset.spd;
+    se('p-clock',`⏱ ${curSpeed}× · ${curSpeed==1?'LIVE':'FAST'}`);
+  });
+});
+
+let isPaused=false;
+document.getElementById('pb').addEventListener('click',async function(){
+  const r=await fetch('/control/pause',{method:'POST'});const d=await r.json();
+  isPaused=d.paused;this.textContent=isPaused?'▶ Resume':'⏸ Pause';this.classList.toggle('on',isPaused);
+});
+
+// scrubber — drag to preview the hour, release to seek
+const seek=document.getElementById('seek');
+seek.addEventListener('input',()=>{
+  seeking=true;
+  se('seekLbl',`hour ${Number(seek.value).toFixed(1)} / ${durationHours.toFixed(1)}`);
+});
+seek.addEventListener('change',async()=>{
+  await fetch(`/control/seek/${seek.value}`,{method:'POST'});
+  seeking=false;            // canvas reset happens when the engine's "seeked" message arrives
+});
+
+// ── websocket ─────────────────────────────────────────────────────────────────
+// ── 12-lead viewer (opens a full-screen window) + scrubber event markers ──────
+document.getElementById('ecg12btn').addEventListener('click',()=>{
+  window.open('/ecg12','ecg12','width=1280,height=820,menubar=no,toolbar=no,location=no');
+});
+
+function seekTo(hh){
+  fetch(`/control/seek/${hh}`,{method:'POST'});
+  seek.value=hh;se('seekLbl',`hour ${Number(hh).toFixed(1)} / ${durationHours.toFixed(1)}`);
+}
+const ONSET_CLASS={hypotension:'mk-hypo',spo2_low:'mk-spo2',qtc_prolonged:'mk-qtc'};
+const ONSET_NAME={hypotension:'MAP<60',spo2_low:'SpO₂<88',qtc_prolonged:'QTc>500'};
+async function loadEvents(){
+  const eBox=document.getElementById('marksEcg'),oBox=document.getElementById('marksOnset');
+  if(eBox)eBox.innerHTML='';if(oBox)oBox.innerHTML='';
+  try{
+    const e=await(await fetch('/events')).json();
+    const dur=e.duration_hours||durationHours||1;
+    // cyan ECG ticks ABOVE the slider
+    let he='';
+    (e.ecgs||[]).forEach(g=>{
+      const L=Math.max(0,Math.min(100,g.hour/dur*100));
+      he+=`<div class="mk mk-ecg" style="left:${L}%" data-h="${g.hour}" title="ECG ${g.study_id} · QTc ${g.qtc??'?'} ms · ${g.rhythm||''}"></div>`;
+    });
+    if(eBox)eBox.innerHTML=he;
+    // onset ticks BELOW the slider — only the START of each critical episode
+    let ho='';
+    (e.onsets||[]).forEach(o=>{
+      const L=Math.max(0,Math.min(100,o.hour/dur*100));
+      ho+=`<div class="mk mk-on ${ONSET_CLASS[o.type]||''}" style="left:${L}%" data-h="${o.hour}" title="${ONSET_NAME[o.type]||o.type} onset · hour ${o.hour.toFixed(1)}"></div>`;
+    });
+    if(oBox)oBox.innerHTML=ho;
+  }catch{}
+}
+function markClick(e){
+  const m=e.target.closest('.mk-ecg,.mk-on');if(!m)return;
+  seekTo(m.dataset.h);
+}
+document.getElementById('marksEcg').addEventListener('click',markClick);
+document.getElementById('marksOnset').addEventListener('click',markClick);
+
+const dot=document.getElementById('p-conn'),info=document.getElementById('ci');
+let ws,rt;
+function conn(){
+  ws=new WebSocket(`ws://${window.location.host}/stream`);
+  ws.onopen=()=>{dot.className='live';info.textContent='Connected';clearTimeout(rt)};
+  ws.onclose=()=>{dot.className='error';info.textContent='Reconnecting…';rt=setTimeout(conn,2000)};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=evt=>{
+    let msg;try{msg=JSON.parse(evt.data)}catch{return}
+    switch(msg.type){
+      case'session_start':
+        se('p-id',`PATIENT ${msg.patient_id||'—'}`);se('p-meta',msg.label||'');
+        if(msg.patients)popPts(msg.patients);
+        document.getElementById('pts').value=(msg.patients?msg.patients.findIndex(p=>p.subject_id===msg.patient_id):0);
+        if(typeof msg.duration_hours==='number'){durationHours=msg.duration_hours;seek.max=durationHours.toFixed(2);}
+        if(typeof msg.speed!=='undefined'){curSpeed=msg.speed;se('p-clock',`⏱ ${curSpeed}× · ${curSpeed==1?'LIVE':'FAST'}`);}
+        seek.value=0;se('seekLbl',`hour 0.0 / ${durationHours.toFixed(1)}`);
+        clines=[];Object.keys(alarms).forEach(k=>delete alarms[k]);renderA();
+        loadEvents();
+        wp=0;prevX=null;prevY=null;grid();break;
+      case'seeked':wp=0;prevX=null;prevY=null;grid();break;   // full canvas clear after a jump
+      case'ecg_chunk':if(msg.samples?.length)chunk(msg.samples);break;
+      case'vitals':upd(msg);break;
+      case'drug_event':upDrugs(msg.active_drugs);break;
+      case'alarm':upAlarm(msg.condition,msg.active);break;
+    }
+  };
+}
+window.addEventListener('resize',resize);
+setTimeout(()=>{resize();conn();fetch('/patients').then(r=>r.json()).then(d=>{if(d.patients)popPts(d.patients)}).catch(()=>{})},60);
+</script>
+</body>
+</html>
